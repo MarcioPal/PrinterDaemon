@@ -1,122 +1,195 @@
 using Microsoft.Extensions.Options;
-using PdfiumViewer;
-using System.Drawing;
-using System.Drawing.Printing;
-namespace PrinterDaemon
+using PrinterDaemon.Printing;
+using PrinterDaemon.Utils;
+using System.Collections.Concurrent;
+
+namespace PrinterDaemon;
+
+public class Worker(
+    ILogger<Worker> logger,
+    IOptions<PrinterSettings> options,
+    PrinterService printerService)
+    : BackgroundService
 {
-    public class Worker(
-        ILogger<Worker> logger,
-        IOptions<PrinterSettings> options)
-        : BackgroundService
+    private readonly PrinterSettings _config = options.Value;
+    private readonly ConcurrentQueue<string> _queue = new();
+    private readonly SemaphoreSlim _signal = new(0);
+    private FileSystemWatcher? _watcher;
+    private readonly HashSet<string> _pendientes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _lock = new();
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        private readonly PrinterSettings _config = options.Value;
+        logger.LogInformation("Servicio de impresión iniciado.");
 
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        Directory.CreateDirectory(_config.InputFolder);
+        Directory.CreateDirectory(_config.ProcessedFolder);
+        Directory.CreateDirectory(_config.ErrorFolder);
+
+        // Encola archivos que ya existían al iniciar
+        EncolarPendientes();
+
+        // Comienza a vigilar la carpeta
+        IniciarWatcher();
+
+        while (!stoppingToken.IsCancellationRequested)
         {
-            logger.LogInformation("Servicio de impresión iniciado.");
+            await _signal.WaitAsync(stoppingToken);
 
-            if (!Directory.Exists(_config.WatchFolder))
-                Directory.CreateDirectory(_config.WatchFolder);
+            while (_queue.TryDequeue(out var archivo))
+            {
+                ProcesarArchivo(archivo);
+            }
+        }
+    }
 
-            while (!stoppingToken.IsCancellationRequested)
+    private void EncolarPendientes()
+    {
+        var archivos = Directory
+            .GetFiles(_config.InputFolder, _config.FileFilter)
+            .OrderBy(f => f);
+
+        foreach (var archivo in archivos)
+        {
+            if (_pendientes.Add(archivo))
+            {
+                _queue.Enqueue(archivo);
+                _signal.Release();
+            }
+        }
+    }
+
+    private void IniciarWatcher()
+    {
+        _watcher = new FileSystemWatcher(
+            _config.InputFolder,
+            _config.FileFilter);
+
+        _watcher.NotifyFilter =
+            NotifyFilters.FileName |
+            NotifyFilters.CreationTime |
+            NotifyFilters.Size;
+
+        _watcher.Created += WatcherCreated;
+        _watcher.Renamed += WatcherRenamed;
+
+        _watcher.EnableRaisingEvents = true;
+    }
+
+    private void WatcherRenamed(object? sender, RenamedEventArgs e)
+    {
+        WatcherCreated(sender!, new FileSystemEventArgs(
+            WatcherChangeTypes.Created,
+            Path.GetDirectoryName(e.FullPath)!,
+            e.Name!));
+    }
+   
+
+    private void WatcherCreated(object sender, FileSystemEventArgs e)
+    {
+        lock (_lock)
+        {
+            if (_pendientes.Contains(e.FullPath))
+                return;
+
+            _pendientes.Add(e.FullPath);
+        }
+
+        _queue.Enqueue(e.FullPath);
+        _signal.Release();
+    }
+
+
+
+
+
+    private void ProcesarArchivo(string archivo)
+    {
+        try
+        {
+            logger.LogInformation("Procesando {archivo}", archivo);
+
+            if (!FileHelper.WaitUntilReady(archivo))
+            {
+                logger.LogWarning("El archivo aún no está listo: {archivo}", archivo);
+                return;
+            }
+
+            bool ok = false;
+
+            for (int intento = 1; intento <= _config.RetryCount; intento++)
             {
                 try
                 {
-                    string[] archivos = Directory.GetFiles(
-                                        _config.WatchFolder,
-                                        _config.FileFilter);
-
-                    foreach (string archivo in archivos)
+                    if (!File.Exists(archivo))
                     {
-                        try
-                        {
-                            string extension = Path.GetExtension(archivo).ToLowerInvariant();
-
-                            switch (extension)
-                            {
-                                case ".pdf":
-                                    ImprimirPdf(archivo);
-                                    break;
-
-                                case ".bmp":
-                                    ImprimirBmp(archivo);
-                                    break;
-
-                                default:
-                                    logger.LogWarning("Tipo de archivo no soportado: {archivo}", archivo);
-                                    continue;
-                            }
-
-                            Thread.Sleep(2000);
-                            if (_config.DeleteAfterPrint)
-                                File.Delete(archivo);
-                        }
-                        catch (Exception ex)
-                        {
-                            logger.LogError(ex, $"Error imprimiendo {archivo}");
-                        }
+                        logger.LogWarning("El archivo desapareció: {archivo}", archivo);
+                        return;
                     }
+
+                    // Imprime el archivo (PDF o BMP)
+                    printerService.Print(archivo);
+
+                    // Da tiempo al spooler de Windows a recibir el trabajo
+                    Thread.Sleep(_config.SpoolDelay);
+
+                    ok = true;
+                    break;
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Error leyendo carpeta.");
-                }
+                    logger.LogError(ex,
+                        "Error imprimiendo {archivo}. Intento {intento} de {total}",
+                        archivo,
+                        intento,
+                        _config.RetryCount);
 
-                await Task.Delay(_config.Interval, stoppingToken);
+                    Thread.Sleep(_config.RetryDelay);
+                }
+            }
+
+            if (ok)
+                MoverProcesado(archivo);
+            else
+                MoverError(archivo);
+        }
+        finally
+        {
+            lock (_lock)
+            {
+                _pendientes.Remove(archivo);
             }
         }
+    }
 
 
-    private void ImprimirPdf(string archivo)
+
+    private void MoverProcesado(string archivo)
     {
-        using var document = PdfDocument.Load(archivo);
+        string destino = Path.Combine(
+            _config.ProcessedFolder,
+            Path.GetFileName(archivo));
 
-        using var printDocument = document.CreatePrintDocument();
+        if (File.Exists(destino))
+            File.Delete(destino);
 
-        printDocument.PrinterSettings.PrinterName = _config.PrinterName;
+        File.Move(archivo, destino);
 
-        if (!printDocument.PrinterSettings.IsValid)
-            throw new Exception($"No se encontró la impresora '{_config.PrinterName}'.");
-
-        printDocument.PrintController = new StandardPrintController();
-
-        printDocument.Print();
+        logger.LogInformation("Movido a Procesados.");
     }
 
-    private void ImprimirBmp(string archivo)
+    private void MoverError(string archivo)
     {
-        using Image imagen = Image.FromFile(archivo);
+        string destino = Path.Combine(
+            _config.ErrorFolder,
+            Path.GetFileName(archivo));
 
-        using PrintDocument pd = new PrintDocument();
+        if (File.Exists(destino))
+            File.Delete(destino);
 
-        pd.PrinterSettings.PrinterName = _config.PrinterName;
+        File.Move(archivo, destino);
 
-        if (!pd.PrinterSettings.IsValid)
-            throw new Exception($"No se encontró la impresora '{_config.PrinterName}'.");
-
-        pd.PrintController = new StandardPrintController();
-
-        pd.PrintPage += (sender, e) =>
-        {
-            Rectangle area = e.MarginBounds;
-
-            // Escala la imagen manteniendo la proporción
-            double escala = Math.Min(
-                (double)area.Width / imagen.Width,
-                (double)area.Height / imagen.Height);
-
-            int ancho = (int)(imagen.Width * escala);
-            int alto = (int)(imagen.Height * escala);
-
-            int x = area.X + (area.Width - ancho) / 2;
-            int y = area.Y + (area.Height - alto) / 2;
-
-            e.Graphics.DrawImage(imagen, x, y, ancho, alto);
-        };
-
-        pd.Print();
+        logger.LogError("Movido a Error.");
     }
 
-
-    }
 }

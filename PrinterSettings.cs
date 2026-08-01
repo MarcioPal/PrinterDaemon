@@ -8,10 +8,22 @@ namespace PrinterDaemon
     public class PrinterSettings
     {
         public string PrinterName { get; set; } = "";
-        public string WatchFolder { get; set; } = "";
-        public string FileFilter { get; set; } = "*.txt";
-        public bool DeleteAfterPrint { get; set; } = true;
-        public int Interval { get; set; } = 1000;
-    }
-}
 
+    public string SumatraPath { get; set; } = "";
+
+    public string InputFolder { get; set; } = "";
+
+    public string ProcessedFolder { get; set; } = "";
+
+    public string ErrorFolder { get; set; } = "";
+
+    public string FileFilter { get; set; } = "*.*";
+
+    public bool DeleteAfterPrint { get; set; }
+
+    public int Interval { get; set; }
+
+    public int RetryCount { get; set; }
+
+    public int RetryDelay { get; set; }
+    public int SpoolDelay { get; set; }
