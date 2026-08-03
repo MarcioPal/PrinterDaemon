@@ -21,6 +21,9 @@ public class Worker(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation("Servicio de impresión iniciado.");
+        logger.LogInformation("InputFolder     : '{Folder}'", _config.InputFolder);
+        logger.LogInformation("ProcessedFolder : '{Folder}'", _config.ProcessedFolder);
+        logger.LogInformation("ErrorFolder     : '{Folder}'", _config.ErrorFolder);
 
         Directory.CreateDirectory(_config.InputFolder);
         Directory.CreateDirectory(_config.ProcessedFolder);
@@ -116,6 +119,7 @@ public class Worker(
             }
 
             bool ok = false;
+            string? archivoImpreso = null;
 
             for (int intento = 1; intento <= _config.RetryCount; intento++)
             {
@@ -128,7 +132,8 @@ public class Worker(
                     }
 
                     // Imprime el archivo (PDF o BMP)
-                    printerService.Print(archivo);
+                    // Imprime el archivo y devuelve el archivo realmente impreso
+                    archivoImpreso = printerService.Print(archivo);
 
                     // Da tiempo al spooler de Windows a recibir el trabajo
                     Thread.Sleep(_config.SpoolDelay);
@@ -138,6 +143,15 @@ public class Worker(
                 }
                 catch (Exception ex)
                 {
+                    // Exception details are logged via ILogger (forwarded to Serilog)
+                    logger.LogError(ex,
+                        "Error imprimiendo {archivo}. Intento {intento} de {total}",
+                        archivo,
+                        intento,
+                        _config.RetryCount);
+
+                    Thread.Sleep(_config.RetryDelay);
+
                     logger.LogError(ex,
                         "Error imprimiendo {archivo}. Intento {intento} de {total}",
                         archivo,
@@ -149,9 +163,21 @@ public class Worker(
             }
 
             if (ok)
-                MoverProcesado(archivo);
+            {
+                // Si se generó otro archivo (por ejemplo un PDF desde un PRN),
+                // eliminar el archivo original.
+                if (archivoImpreso != archivo &&
+                    File.Exists(archivo))
+                {
+                    File.Delete(archivo);
+                }
+
+                MoverProcesado(archivoImpreso!);
+            }
             else
+            {
                 MoverError(archivo);
+            }
         }
         finally
         {
