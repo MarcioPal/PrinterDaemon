@@ -27,6 +27,8 @@ public class PrnPrinter
         string archivoPdf = Path.ChangeExtension(archivoPrn, ".pdf");
 
         QuestPDF.Settings.License = LicenseType.Community;
+        // Habilitar debugging para obtener información detallada en caso de errores de layout
+        QuestPDF.Settings.EnableDebugging = true;
 
         int totalPaginas =
             (int)Math.Ceiling(
@@ -35,8 +37,10 @@ public class PrnPrinter
 
         decimal grandTotal = presupuesto.Items.Sum(i => i.Importe);
 
-        Document.Create(document =>
+        try
         {
+            Document.Create(document =>
+            {
             int indice = 0;
             int pagina = 1;
 
@@ -54,6 +58,13 @@ public class PrnPrinter
                         .FontFamily(_config.FontName)
                         .FontSize(_config.NormalFontSize));
 
+                    // calcular alturas para dividir la hoja en dos mitades
+                    var margin = 15f;
+                    // asegurar que el separador tenga la altura mínima necesaria según la fuente
+                    var sepFontSize = Math.Max(6f, _config.NormalFontSize - 6);
+                    var sepHeight = Math.Max(8f, sepFontSize * 1.2f + 2f);
+                    var halfHeight = (float)((PageSizes.A4.Height - 2 * margin - sepHeight) / 2.0);
+
                     page.Content().Column(col =>
                     {
                         //---------------------------------------------------
@@ -69,68 +80,69 @@ public class PrnPrinter
                         // transporte acumulado hasta esta página (incluye esta página)
                         var transporteAcumulado = acumulado + subtotalPagina;
 
-                        // Renderizar ORIGINAL usando la lista de items calculada
+                        // Renderizar ORIGINAL ocupando la mitad superior
                         bool esUltimaPagina = (indice + pageItems.Count) >= presupuesto.Items.Count;
 
-                        RenderMediaHojaItems(
-                            col,
-                            presupuesto,
-                            pageItems,
-                            ref acumulado,
-                            "ORIGINAL",
-                            pagina,
-                            totalPaginas,
-                            transporteAcumulado,
-                            grandTotal,
-                            incrementarAcumulado: true,
-                            esUltimaPagina: esUltimaPagina);
+                        col.Item().Height(halfHeight).Column(topCol =>
+                        {
+                            RenderMediaHojaItems(
+                                topCol,
+                                presupuesto,
+                                pageItems,
+                                ref acumulado,
+                                "ORIGINAL",
+                                pagina,
+                                totalPaginas,
+                                transporteAcumulado,
+                                grandTotal,
+                                incrementarAcumulado: true,
+                                esUltimaPagina: esUltimaPagina);
+                        });
 
                         // avanzamos el indice por la cantidad de items procesados
                         indice += pageItems.Count;
 
-                        // Log para depuración de subtotales
-                        try
+                        // Separador central (visual) entre las mitades
+                        col.Item().Height(sepHeight).AlignCenter().Text(new string('-', 80)).FontFamily(_config.FontName).FontSize(sepFontSize);
+
+                        // Renderizar DUPLICADO ocupando la mitad inferior
+                        col.Item().Height(halfHeight).Column(botCol =>
                         {
-                            Serilog.Log.Information("PRN: Pagina {pagina} subtotalPagina={subtotal} acumulado={acumulado}", pagina, subtotalPagina, acumulado);
-                        }
-                        catch { }
-
-                        col.Item().Height(10);
-
-                        col.Item()
-                            .Text(new string('-', 72))  
-                            .FontFamily(_config.FontName);
-
-                        col.Item().Height(10);
-
-                        //---------------------------------------------------
-                        // DUPLICADO
-                        //---------------------------------------------------
-
-                        // Renderizamos el duplicado sin volver a incrementar el acumulado
-                        // y usando el mismo transporte/subtotal de la original
-                        // Renderizamos el duplicado sin volver a incrementar el acumulado
-                        // pero mostrando el mismo transporte/subtotal de la original
-                        // Duplicate should display same transporte and same ultimaPagina flag
-                        RenderMediaHojaItems(
-                            col,
-                            presupuesto,
-                            pageItems,
-                            ref acumulado,
-                            "DUPLICADO",
-                            pagina,
-                            totalPaginas,
-                            transporteAcumulado,
-                            grandTotal,
-                            incrementarAcumulado: false,
-                            esUltimaPagina: esUltimaPagina);
+                            RenderMediaHojaItems(
+                                botCol,
+                                presupuesto,
+                                pageItems,
+                                ref acumulado,
+                                "DUPLICADO",
+                                pagina,
+                                totalPaginas,
+                                transporteAcumulado,
+                                grandTotal,
+                                incrementarAcumulado: false,
+                                esUltimaPagina: esUltimaPagina);
+                        });
                     });
                 });
 
                 pagina++;
             }
 
-        }).GeneratePdf(archivoPdf);
+            }).GeneratePdf(archivoPdf);
+        }
+        catch (QuestPDF.Drawing.Exceptions.DocumentLayoutException dex)
+        {
+            try
+            {
+                var carpetaLogs = Path.Combine(AppContext.BaseDirectory, "Logs");
+                Directory.CreateDirectory(carpetaLogs);
+                var debugFile = Path.Combine(carpetaLogs, $"PrnPrinter-LayoutDebug-{DateTime.Now:yyyyMMddHHmmss}.txt");
+                File.WriteAllText(debugFile, dex.ToString());
+                Serilog.Log.Error(dex, "Document layout error generating PDF. Debug info written to {file}", debugFile);
+            }
+            catch (Exception) { }
+
+            throw;
+        }
 
         return archivoPdf;
     }
