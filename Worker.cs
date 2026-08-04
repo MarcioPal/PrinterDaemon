@@ -20,86 +20,122 @@ public class Worker(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Servicio de impresión iniciado.");
-        logger.LogInformation("InputFolder     : '{Folder}'", _config.InputFolder);
-        logger.LogInformation("ProcessedFolder : '{Folder}'", _config.ProcessedFolder);
-        logger.LogInformation("ErrorFolder     : '{Folder}'", _config.ErrorFolder);
-
-        Directory.CreateDirectory(_config.InputFolder);
-        Directory.CreateDirectory(_config.ProcessedFolder);
-        Directory.CreateDirectory(_config.ErrorFolder);
-
-        // Encola archivos que ya existían al iniciar
-        EncolarPendientes();
-
-        // Comienza a vigilar la carpeta
-        IniciarWatcher();
-
-        while (!stoppingToken.IsCancellationRequested)
+        try
         {
-            await _signal.WaitAsync(stoppingToken);
+            logger.LogInformation("Servicio de impresión iniciado.");
+            logger.LogInformation("InputFolder     : '{Folder}'", _config.InputFolder);
+            logger.LogInformation("ProcessedFolder : '{Folder}'", _config.ProcessedFolder);
+            logger.LogInformation("ErrorFolder     : '{Folder}'", _config.ErrorFolder);
 
-            while (_queue.TryDequeue(out var archivo))
+            Directory.CreateDirectory(_config.InputFolder);
+            Directory.CreateDirectory(_config.ProcessedFolder);
+            Directory.CreateDirectory(_config.ErrorFolder);
+
+            // Encola archivos que ya existían al iniciar
+            EncolarPendientes();
+
+            // Comienza a vigilar la carpeta
+            IniciarWatcher();
+
+            while (!stoppingToken.IsCancellationRequested)
             {
-                ProcesarArchivo(archivo);
+                await _signal.WaitAsync(stoppingToken);
+
+                while (_queue.TryDequeue(out var archivo))
+                {
+                    ProcesarArchivo(archivo);
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            logger.LogCritical(ex, "Error inesperado en ExecuteAsync");
+            throw;
         }
     }
 
     private void EncolarPendientes()
     {
-        var archivos = Directory
-            .GetFiles(_config.InputFolder, _config.FileFilter)
-            .OrderBy(f => f);
-
-        foreach (var archivo in archivos)
+        try
         {
-            if (_pendientes.Add(archivo))
+            var archivos = Directory
+                .GetFiles(_config.InputFolder, _config.FileFilter)
+                .OrderBy(f => f);
+
+            foreach (var archivo in archivos)
             {
-                _queue.Enqueue(archivo);
-                _signal.Release();
+                if (_pendientes.Add(archivo))
+                {
+                    _queue.Enqueue(archivo);
+                    _signal.Release();
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error al encolar pendientes desde '{Folder}'", _config.InputFolder);
         }
     }
 
     private void IniciarWatcher()
     {
-        _watcher = new FileSystemWatcher(
-            _config.InputFolder,
-            _config.FileFilter);
+        try
+        {
+            _watcher = new FileSystemWatcher(
+                _config.InputFolder,
+                _config.FileFilter);
 
-        _watcher.NotifyFilter =
-            NotifyFilters.FileName |
-            NotifyFilters.CreationTime |
-            NotifyFilters.Size;
+            _watcher.NotifyFilter =
+                NotifyFilters.FileName |
+                NotifyFilters.CreationTime |
+                NotifyFilters.Size;
 
-        _watcher.Created += WatcherCreated;
-        _watcher.Renamed += WatcherRenamed;
+            _watcher.Created += WatcherCreated;
+            _watcher.Renamed += WatcherRenamed;
 
-        _watcher.EnableRaisingEvents = true;
+            _watcher.EnableRaisingEvents = true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error iniciando FileSystemWatcher en '{Folder}'", _config.InputFolder);
+        }
     }
 
     private void WatcherRenamed(object? sender, RenamedEventArgs e)
     {
-        WatcherCreated(sender!, new FileSystemEventArgs(
-            WatcherChangeTypes.Created,
-            Path.GetDirectoryName(e.FullPath)!,
-            e.Name!));
+        try
+        {
+            WatcherCreated(sender!, new FileSystemEventArgs(
+                WatcherChangeTypes.Created,
+                Path.GetDirectoryName(e.FullPath)!,
+                e.Name!));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error en WatcherRenamed para '{Path}'", e.FullPath);
+        }
     }
    
 
     private void WatcherCreated(object sender, FileSystemEventArgs e)
     {
-        lock (_lock)
+        try
         {
-            if (_pendientes.Contains(e.FullPath))
-                return;
+            lock (_lock)
+            {
+                if (_pendientes.Contains(e.FullPath))
+                    return;
 
-            _pendientes.Add(e.FullPath);
+                _pendientes.Add(e.FullPath);
+            }
+
+            _queue.Enqueue(e.FullPath);
+            _signal.Release();
         }
-
-        _queue.Enqueue(e.FullPath);
-        _signal.Release();
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error manejando evento Created para '{Path}'", e.FullPath);
+        }
     }
 
 
@@ -169,7 +205,14 @@ public class Worker(
                 if (archivoImpreso != archivo &&
                     File.Exists(archivo))
                 {
-                    File.Delete(archivo);
+                    try
+                    {
+                        File.Delete(archivo);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, "No se pudo eliminar el archivo original '{archivo}'", archivo);
+                    }
                 }
 
                 MoverProcesado(archivoImpreso!);
@@ -178,6 +221,10 @@ public class Worker(
             {
                 MoverError(archivo);
             }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error inesperado procesando {archivo}", archivo);
         }
         finally
         {
@@ -192,30 +239,44 @@ public class Worker(
 
     private void MoverProcesado(string archivo)
     {
-        string destino = Path.Combine(
-            _config.ProcessedFolder,
-            Path.GetFileName(archivo));
+        try
+        {
+            string destino = Path.Combine(
+                _config.ProcessedFolder,
+                Path.GetFileName(archivo));
 
-        if (File.Exists(destino))
-            File.Delete(destino);
+            if (File.Exists(destino))
+                File.Delete(destino);
 
-        File.Move(archivo, destino);
+            File.Move(archivo, destino);
 
-        logger.LogInformation("Movido a Procesados.");
+            logger.LogInformation("Movido a Procesados: {archivo}", destino);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error moviendo a procesados: {archivo}", archivo);
+        }
     }
 
     private void MoverError(string archivo)
     {
-        string destino = Path.Combine(
-            _config.ErrorFolder,
-            Path.GetFileName(archivo));
+        try
+        {
+            string destino = Path.Combine(
+                _config.ErrorFolder,
+                Path.GetFileName(archivo));
 
-        if (File.Exists(destino))
-            File.Delete(destino);
+            if (File.Exists(destino))
+                File.Delete(destino);
 
-        File.Move(archivo, destino);
+            File.Move(archivo, destino);
 
-        logger.LogError("Movido a Error.");
+            logger.LogError("Movido a Error: {archivo}", destino);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error moviendo a carpeta de errores: {archivo}", archivo);
+        }
     }
 
 }
