@@ -27,13 +27,14 @@ public class PrnPrinter
         string archivoPdf = Path.ChangeExtension(archivoPrn, ".pdf");
 
         QuestPDF.Settings.License = LicenseType.Community;
-        // Habilitar debugging para obtener información detallada en caso de errores de layout
-        QuestPDF.Settings.EnableDebugging = true;
+        QuestPDF.Settings.EnableDebugging = false;
+
+        int itemsPerPage = Math.Max(1, _config.ItemsPerPage);
 
         int totalPaginas =
             (int)Math.Ceiling(
                 (double)presupuesto.Items.Count /
-                _config.ItemsPerPage);
+                itemsPerPage);
 
         decimal grandTotal = presupuesto.Items.Sum(i => i.Importe);
 
@@ -50,7 +51,7 @@ public class PrnPrinter
             while (indice < presupuesto.Items.Count)
             {
                 // calcular los items que se imprimirán en esta página (lista ya creada)
-                var pageItems = presupuesto.Items.Skip(indice).Take(_config.ItemsPerPage).ToList();
+                var pageItems = presupuesto.Items.Skip(indice).Take(itemsPerPage).ToList();
                 var subtotalPagina = pageItems.Sum(i => i.Importe);
 
                 // estimaciones de espacio

@@ -15,6 +15,7 @@ public class Worker(
     private readonly ConcurrentQueue<string> _queue = new();
     private readonly SemaphoreSlim _signal = new(0);
     private FileSystemWatcher? _watcher;
+    private FileSystemWatcher? _lvWatcher;
     private readonly HashSet<string> _pendientes = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
 
@@ -30,12 +31,20 @@ public class Worker(
             Directory.CreateDirectory(_config.InputFolder);
             Directory.CreateDirectory(_config.ProcessedFolder);
             Directory.CreateDirectory(_config.ErrorFolder);
+            Directory.CreateDirectory(GetLvFolder());
 
             // Encola archivos que ya existían al iniciar
             EncolarPendientes();
 
             // Comienza a vigilar la carpeta
             IniciarWatcher();
+            IniciarLvWatcher();
+
+            var lvArchivo = GetLvFile();
+            if (File.Exists(lvArchivo))
+            {
+                EncolarArchivo(lvArchivo);
+            }
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -46,6 +55,7 @@ public class Worker(
                     ProcesarArchivo(archivo);
                 }
             }
+
         }
         catch (Exception ex)
         {
@@ -53,6 +63,45 @@ public class Worker(
             throw;
         }
     }
+
+    private void IniciarLvWatcher()
+    {
+        try
+        {
+            _lvWatcher = new FileSystemWatcher(GetLvFolder(), "LV.TXT")
+            {
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.CreationTime | NotifyFilters.Size,
+                EnableRaisingEvents = true
+            };
+
+            _lvWatcher.Created += WatcherCreated;
+            _lvWatcher.Renamed += WatcherRenamed;
+            _lvWatcher.Changed += WatcherCreated;
+            logger.LogInformation("Vigilando LV.TXT en '{Folder}'", GetLvFolder());
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error iniciando watcher de LV.TXT en '{Folder}'", GetLvFolder());
+        }
+    }
+
+    private void EncolarArchivo(string archivo)
+    {
+        lock (_lock)
+        {
+            if (_pendientes.Contains(archivo))
+                return;
+
+            _pendientes.Add(archivo);
+        }
+
+        _queue.Enqueue(archivo);
+        _signal.Release();
+    }
+
+    private string GetLvFolder() => _config.InputFolder;
+
+    private string GetLvFile() => Path.Combine(_config.InputFolder, "LV.TXT");
 
     private void EncolarPendientes()
     {

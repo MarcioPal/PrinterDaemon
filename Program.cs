@@ -45,6 +45,7 @@ builder.Services.AddSingleton<PdfPrinter>();
 
 builder.Services.AddSingleton<BmpPrinter>();
 builder.Services.AddSingleton<PrnPrinter>();
+builder.Services.AddSingleton<LvPrinter>();
 
 builder.Services.AddHostedService<Worker>();
 

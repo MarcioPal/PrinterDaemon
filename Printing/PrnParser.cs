@@ -23,7 +23,13 @@ public static class PrnParser
                     data.Tipo = c[1];
 
                     if (c.Length > 2)
-                        data.Fecha = DateTime.Parse(c[2]);
+                    {
+                        data.Fecha = DateTime.ParseExact(
+                            c[2].Trim(),
+                            ["dd/MM/yyyy", "yyyyMMdd", "yyyy-MM-dd"],
+                            CultureInfo.InvariantCulture,
+                            DateTimeStyles.None);
+                    }
 
                     break;
 
