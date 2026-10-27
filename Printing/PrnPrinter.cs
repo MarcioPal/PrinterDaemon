@@ -42,89 +42,151 @@ public class PrnPrinter
             Document.Create(document =>
             {
             int indice = 0;
-            int pagina = 1;
+            int pagina = 1; // physical page counter
+            int paginaLogica = 1; // logical page (1..totalPaginas) shown in headers
 
             decimal acumulado = 0;
 
             while (indice < presupuesto.Items.Count)
             {
-                document.Page(page =>
+                // calcular los items que se imprimirán en esta página (lista ya creada)
+                var pageItems = presupuesto.Items.Skip(indice).Take(_config.ItemsPerPage).ToList();
+                var subtotalPagina = pageItems.Sum(i => i.Importe);
+
+                // estimaciones de espacio
+                var margin = 15f;
+                var sepFontSize = Math.Max(6f, _config.NormalFontSize - 6);
+                var sepHeight = Math.Max(8f, sepFontSize * 1.2f + 2f);
+                var halfHeight = (float)((PageSizes.A4.Height - 2 * margin - sepHeight) / 2.0);
+                var lineHeight = _config.NormalFontSize * 1.2f;
+
+                // estimar líneas del encabezado y pie (conservador)
+                var headerLines = 9;
+                var footerBaseLines = 2; // linea de separador + total
+
+                int obsLines = 0;
+                if (!string.IsNullOrWhiteSpace(presupuesto.Observaciones))
                 {
-                    page.Size(PageSizes.A4);
+                    // use a conservative chars-per-line estimate so observations don't get split
+                    obsLines = (int)Math.Ceiling((double)presupuesto.Observaciones.Length / 50.0);
+                }
 
-                    page.Margin(15);
+                var neededHeight = (headerLines + pageItems.Count + footerBaseLines + obsLines) * lineHeight;
+                bool needsFullPage = neededHeight > halfHeight;
 
-                    page.DefaultTextStyle(x => x
-                        .FontFamily(_config.FontName)
-                        .FontSize(_config.NormalFontSize));
+                var transporteAcumulado = acumulado + subtotalPagina;
 
-                    // calcular alturas para dividir la hoja en dos mitades
-                    var margin = 15f;
-                    // asegurar que el separador tenga la altura mínima necesaria según la fuente
-                    var sepFontSize = Math.Max(6f, _config.NormalFontSize - 6);
-                    var sepHeight = Math.Max(8f, sepFontSize * 1.2f + 2f);
-                    var halfHeight = (float)((PageSizes.A4.Height - 2 * margin - sepHeight) / 2.0);
-
-                    page.Content().Column(col =>
+                if (needsFullPage)
+                {
+                    // Render original on full page
+                    document.Page(page =>
                     {
-                        //---------------------------------------------------
-                        // ORIGINAL
-                        //---------------------------------------------------
-
-                        int inicio = indice;
-
-                        // calcular los items que se imprimirán en esta página
-                        var pageItems = presupuesto.Items.Skip(indice).Take(_config.ItemsPerPage).ToList();
-                        var subtotalPagina = pageItems.Sum(i => i.Importe);
-
-                        // transporte acumulado hasta esta página (incluye esta página)
-                        var transporteAcumulado = acumulado + subtotalPagina;
-
-                        // Renderizar ORIGINAL ocupando la mitad superior
-                        bool esUltimaPagina = (indice + pageItems.Count) >= presupuesto.Items.Count;
-
-                        col.Item().Height(halfHeight).Column(topCol =>
+                        page.Size(PageSizes.A4);
+                        page.Margin((int)margin);
+                        page.DefaultTextStyle(x => x.FontFamily(_config.FontName).FontSize(_config.NormalFontSize));
+                        page.Content().Column(col =>
                         {
                             RenderMediaHojaItems(
-                                topCol,
+                                col,
                                 presupuesto,
                                 pageItems,
                                 ref acumulado,
                                 "ORIGINAL",
-                                pagina,
+                                paginaLogica,
                                 totalPaginas,
                                 transporteAcumulado,
                                 grandTotal,
                                 incrementarAcumulado: true,
-                                esUltimaPagina: esUltimaPagina);
+                                esUltimaPagina: (indice + pageItems.Count) >= presupuesto.Items.Count);
                         });
+                    });
 
-                        // avanzamos el indice por la cantidad de items procesados
-                        indice += pageItems.Count;
+                    pagina++;
 
-                        // Separador central (visual) entre las mitades
-                        col.Item().Height(sepHeight).AlignCenter().Text(new string('-', 80)).FontFamily(_config.FontName).FontSize(sepFontSize);
-
-                        // Renderizar DUPLICADO ocupando la mitad inferior
-                        col.Item().Height(halfHeight).Column(botCol =>
+                    // Render duplicate on next page
+                    document.Page(page =>
+                    {
+                        page.Size(PageSizes.A4);
+                        page.Margin((int)margin);
+                        page.DefaultTextStyle(x => x.FontFamily(_config.FontName).FontSize(_config.NormalFontSize));
+                        page.Content().Column(col =>
                         {
                             RenderMediaHojaItems(
-                                botCol,
+                                col,
                                 presupuesto,
                                 pageItems,
                                 ref acumulado,
                                 "DUPLICADO",
-                                pagina,
+                                paginaLogica,
                                 totalPaginas,
                                 transporteAcumulado,
                                 grandTotal,
                                 incrementarAcumulado: false,
-                                esUltimaPagina: esUltimaPagina);
+                                esUltimaPagina: (indice + pageItems.Count) >= presupuesto.Items.Count);
                         });
                     });
-                });
 
-                pagina++;
+                    // advance index and page
+                    indice += pageItems.Count;
+                    // logical page consumed
+                    paginaLogica++;
+                    pagina++;
+                }
+                else
+                {
+                    // fits in half page: render both halves on single physical page
+                    document.Page(page =>
+                    {
+                        page.Size(PageSizes.A4);
+                        page.Margin((int)margin);
+                        page.DefaultTextStyle(x => x.FontFamily(_config.FontName).FontSize(_config.NormalFontSize));
+                        page.Content().Column(col =>
+                        {
+                            // ORIGINAL top half
+                            col.Item().Height(halfHeight).Column(topCol =>
+                            {
+                                RenderMediaHojaItems(
+                                    topCol,
+                                    presupuesto,
+                                    pageItems,
+                                    ref acumulado,
+                                    "ORIGINAL",
+                                    paginaLogica,
+                                    totalPaginas,
+                                    transporteAcumulado,
+                                    grandTotal,
+                                    incrementarAcumulado: true,
+                                    esUltimaPagina: (indice + pageItems.Count) >= presupuesto.Items.Count);
+                            });
+
+                            // advance index now that original drawn
+                            indice += pageItems.Count;
+
+                            // separator
+                            col.Item().Height(sepHeight).AlignCenter().Text(new string('-', 80)).FontFamily(_config.FontName).FontSize(sepFontSize);
+
+                            // DUPLICATE bottom half
+                            col.Item().Height(halfHeight).Column(botCol =>
+                            {
+                                RenderMediaHojaItems(
+                                    botCol,
+                                    presupuesto,
+                                    pageItems,
+                                    ref acumulado,
+                                    "DUPLICADO",
+                                    paginaLogica,
+                                    totalPaginas,
+                                    transporteAcumulado,
+                                    grandTotal,
+                                    incrementarAcumulado: false,
+                                    esUltimaPagina: (indice >= presupuesto.Items.Count));
+                            });
+                        });
+                    });
+                    // logical page consumed
+                    paginaLogica++;
+                    pagina++;
+                }
             }
 
             }).GeneratePdf(archivoPdf);
@@ -449,13 +511,28 @@ public class PrnPrinter
 
         if (descripcion.Length > 30)
             descripcion = descripcion.Substring(0, 30);
+        // Helper to center text inside a fixed width
+        static string Center(string s, int width)
+        {
+            if (s.Length >= width)
+                return s.Length == width ? s : s.Substring(0, width);
+
+            int totalPad = width - s.Length;
+            int padLeft = totalPad / 2;
+            int padRight = totalPad - padLeft;
+            return new string(' ', padLeft) + s + new string(' ', padRight);
+        }
+
+        var cantidad = item.Cantidad.ToString("0.##");
+        var codigo = item.Codigo ?? "";
+        var descuento = item.Descuento.ToString("0") + "%";
 
         return
-            item.Cantidad.ToString("0.##").PadLeft(6) + " " +
+            Center(cantidad, 6) + " " +
             descripcion.PadRight(30) + " " +
-            item.Codigo.PadLeft(5) + " " +
+            Center(codigo, 5) + " " +
             item.Precio.ToString("0.00").PadLeft(10) + " " +
-            (item.Descuento.ToString("0") + "%").PadLeft(4) + " " +
+            Center(descuento, 4) + " " +
             item.Importe.ToString("0.00").PadLeft(12);
     }
 }
