@@ -18,7 +18,7 @@ public sealed class LvPrinter
 
     public string Print(string archivo)
     {
-        var reporte = LvParser.Parse(archivo);
+        var reporte = LvParser.Parse(archivo, _config.FeProceDbfPath);
         var archivoPdf = Path.ChangeExtension(archivo, ".pdf");
         QuestPDF.Settings.License = LicenseType.Community;
 

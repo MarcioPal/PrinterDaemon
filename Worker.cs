@@ -40,11 +40,8 @@ public class Worker(
             IniciarWatcher();
             IniciarLvWatcher();
 
-            var lvArchivo = GetLvFile();
-            if (File.Exists(lvArchivo))
-            {
+            foreach (var lvArchivo in GetLvFiles().Where(File.Exists))
                 EncolarArchivo(lvArchivo);
-            }
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -68,7 +65,7 @@ public class Worker(
     {
         try
         {
-            _lvWatcher = new FileSystemWatcher(GetLvFolder(), "LV.TXT")
+            _lvWatcher = new FileSystemWatcher(GetLvFolder(), "LV.CSV")
             {
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.CreationTime | NotifyFilters.Size,
                 EnableRaisingEvents = true
@@ -77,7 +74,7 @@ public class Worker(
             _lvWatcher.Created += WatcherCreated;
             _lvWatcher.Renamed += WatcherRenamed;
             _lvWatcher.Changed += WatcherCreated;
-            logger.LogInformation("Vigilando LV.TXT en '{Folder}'", GetLvFolder());
+            logger.LogInformation("Vigilando LV.CSV en '{Folder}'", GetLvFolder());
         }
         catch (Exception ex)
         {
@@ -101,7 +98,11 @@ public class Worker(
 
     private string GetLvFolder() => _config.InputFolder;
 
-    private string GetLvFile() => Path.Combine(_config.InputFolder, "LV.TXT");
+    private IEnumerable<string> GetLvFiles() =>
+    [
+        Path.Combine(_config.InputFolder, "LV.CSV"),
+        Path.Combine(_config.InputFolder, "LV.TXT")
+    ];
 
     private void EncolarPendientes()
     {

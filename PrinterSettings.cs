@@ -17,6 +17,8 @@ namespace PrinterDaemon
 
         public string ErrorFolder { get; set; } = "";
 
+        public string FeProceDbfPath { get; set; } = "";
+
         public string FileFilter { get; set; } = "*.*";
 
         public bool DeleteAfterPrint { get; set; }
