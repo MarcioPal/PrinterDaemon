@@ -43,11 +43,8 @@ public class PrinterService
                 }
 
             case ".txt":
-            case ".csv":
-                var nombre = Path.GetFileName(archivo);
-                if (!string.Equals(nombre, "LV.TXT", StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(nombre, "LV.CSV", StringComparison.OrdinalIgnoreCase))
-                    throw new Exception($"Archivo de ventas no soportado: {nombre}");
+                if (!string.Equals(Path.GetFileName(archivo), "LV.TXT", StringComparison.OrdinalIgnoreCase))
+                    throw new Exception($"Archivo TXT no soportado: {Path.GetFileName(archivo)}");
 
                 {
                     string pdf = _lv.Print(archivo);
